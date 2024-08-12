@@ -1,0 +1,28 @@
+{
+  "name": "hardhat-demo",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "deploy": "npx hardhat run scripts/deploy.ts --network <network>",
+    "verify": "npx hardhat verify --network <network> <contract_address> <constructor_arguments>"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@nomiclabs/hardhat-etherscan": "^3.1.8",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^22.2.0",
+    "hardhat": "^2.22.8",
+    "hardhat-deploy": "^0.12.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "ethers": "^5.7.2"
+  }
+}
