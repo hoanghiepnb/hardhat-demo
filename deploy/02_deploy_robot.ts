@@ -11,10 +11,7 @@ const deployFunction: DeployFunction = async function (hre: HardhatRuntimeEnviro
     args: ["Mock Robot", "MRB"],
     log: true,
   });
-
-  const RobotInstance = await hre.ethers.getContractAt("Robot", Robot.address);
-  await RobotInstance.setURI("https://api.mockrobot.io/robots/");
-  await RobotInstance.mint(deployer);
 };
 
 export default deployFunction;
+deployFunction.tags = ["Robot"];
