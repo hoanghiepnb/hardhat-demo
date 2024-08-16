@@ -25,10 +25,12 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         address owner;
         address highestBidder;
         address paymentToken;
+        BidStatus status;
     }
 
     mapping(address => mapping (uint256 => Item)) public items; // NFT_contract_address => NFTId => Item
     mapping(address => mapping (uint256 => address[])) public bidders; // NFT_contract_address => NFTId => bidders
+    mapping(address => mapping (uint256 => uint256[])) public bidPrices; // NFT_contract_address => NFTId => bidPrices
     mapping(address => mapping (uint256 => mapping(uint256 => BidStatus))) public bidStatus; // NFT_contract_address => NFTId => bidIndex => status
 
     address public feeReceiver;
@@ -55,7 +57,8 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
             createdTime: block.timestamp,
             owner: msg.sender,
             highestBidder: address(0),
-            paymentToken: _paymentToken
+            paymentToken: _paymentToken,
+            status: BidStatus.Available
         });
         totalItemsBids++;
         emit AuctionCreated(_nftAddress, _nftId, _paymentToken, _minPrice);
@@ -77,23 +80,68 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         emit Bid(_nftAddress, _nftId, _bidder, _price);
     }
 
+    // 10 20 30 40 50 100
     function cancelBid(address _nftAddress, uint256 _nftId, uint256 _bidIndex) external whenNotPaused nonReentrant {
         require(bidStatus[_nftAddress][_nftId][_bidIndex] == BidStatus.Available, "Auction: Bid is not available");
         Item storage _item = items[_nftAddress][_nftId];
+        require(_item.status == BidStatus.Available, "Auction: Bid is not available");
+        _item.status = BidStatus.Cancelled;
         address _bidder = bidders[_nftAddress][_nftId][_bidIndex];
-        uint256 _price = _item.lastBidPrice;
-        if (_item.paymentToken != address(0)) {
-            IERC20(_item.paymentToken).safeTransfer(_bidder, _price);
-        } else {
-            payable(_bidder).transfer(_price);
-        }
+        require(_bidder == msg.sender, "Auction: Only bidder can cancel the bid");
+        uint256 _price = bidPrices[_nftAddress][_nftId][_bidIndex];
+        require(_item.lastBidPrice > _price, "Auction: Cannot cancel last bid");
+
         bidStatus[_nftAddress][_nftId][_bidIndex] = BidStatus.Cancelled;
+        uint256 _penalty = _price * penaltyFee / FEE_DENOMINATOR;
+        if (_item.paymentToken != address(0)) {
+            IERC20(_item.paymentToken).safeTransfer(_bidder, _price - _penalty);
+            IERC20(_item.paymentToken).safeTransfer(feeReceiver, _penalty);
+        } else {
+            payable(_bidder).transfer(_price - _penalty);
+            payable(feeReceiver).transfer(_penalty);
+        }
+        emit BidCancelled(_nftAddress, _nftId, _bidder, _price);
     }
 
-    function acceptBid() external {
+    function acceptBid(address _nftAddress, uint256 _nftId) external nonReentrant {
+        Item storage _item = items[_nftAddress][_nftId];
+        require(_item.status == BidStatus.Available, "Auction: Bid is not available");
+        require(_item.owner == msg.sender, "Auction: Only owner can accept the bid");
+        address _bidder = _item.highestBidder;
+        uint256 _price = _item.lastBidPrice;
+        uint256 _feeAmount = _price * fee / FEE_DENOMINATOR;
+        uint256 _sellerAmount = _price - _feeAmount;
+        _item.status = BidStatus.Accepted;
+        bidStatus[_nftAddress][_nftId][bidders[_nftAddress][_nftId].length - 1] = BidStatus.Accepted;
+        if (_item.paymentToken != address(0)) {
+            IERC20(_item.paymentToken).safeTransfer(_item.owner, _sellerAmount);
+            IERC20(_item.paymentToken).safeTransfer(feeReceiver, _feeAmount);
+        } else {
+            payable(feeReceiver).transfer(_feeAmount);
+            payable(_item.owner).transfer(_sellerAmount);
+        }
 
+        // back money to other bidders
+        for (uint256 i = 0; i < bidders[_nftAddress][_nftId].length; i++) {
+            if (bidStatus[_nftAddress][_nftId][i] == BidStatus.Available) {
+                uint256 _bidPrice = bidPrices[_nftAddress][_nftId][i];
+                address _bidder = bidders[_nftAddress][_nftId][i];
+                if (_item.paymentToken == address(0)) {
+                    payable(_bidder).transfer(_bidPrice);
+                } else {
+                    IERC20(_item.paymentToken).safeTransfer(_bidder, _bidPrice);
+                }
+                bidStatus[_nftAddress][_nftId][i] = BidStatus.Cancelled;
+            }
+        }
+        IERC721(_nftAddress).transferFrom(address(this), _bidder, _nftId);
+        emit BidAccepted(_nftAddress, _nftId, _bidder, _price);
     }
 
+    // cancel auction
+    // owner can cancel auction
+    // back nft to owner
+    // back money to bidders
     function cancelAuction() external {
 
     }
@@ -110,8 +158,10 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         _item.lastBidPrice = _price;
         _item.highestBidder = _bidder;
         bidders[_nftAddress][_nftId].push(_bidder);
+        bidPrices[_nftAddress][_nftId].push(_price);
         uint256 totalBids = bidders[_nftAddress][_nftId].length;
         bidStatus[_nftAddress][_nftId][totalBids - 1] = BidStatus.Available;
+        _item.status = BidStatus.Available;
     }
 
     // Private functions
@@ -135,6 +185,8 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
     // Events
     event AuctionCreated(address indexed nftAddress, uint256 indexed nftId, address indexed paymentToken, uint256 minPrice);
     event Bid(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
+    event BidCancelled(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
+    event BidAccepted(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
 
     // Fallback functions
     fallback() external {
