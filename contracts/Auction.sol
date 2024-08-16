@@ -28,13 +28,14 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
     }
 
     mapping(address => mapping (uint256 => Item)) public items; // NFT_contract_address => NFTId => Item
-    mapping(address => mapping (uint256 => uint256[])) public bidders; // NFT_contract_address => NFTId => bidders
+    mapping(address => mapping (uint256 => address[])) public bidders; // NFT_contract_address => NFTId => bidders
     mapping(address => mapping (uint256 => mapping(uint256 => BidStatus))) public bidStatus; // NFT_contract_address => NFTId => bidIndex => status
 
     address public feeReceiver;
     uint256 public fee;
     uint256 public totalItemsBids;
     uint256 public totalBids;
+    uint256 public penaltyFee; // recommended 30%
     uint256 public constant FEE_DENOMINATOR = 10000;
 
     // Modifier
@@ -45,7 +46,6 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
     }
     // External functions
 
-    // IERC721Receiver functions
     function createAuction(address _nftAddress, uint256 _nftId, address _paymentToken, uint256 _minPrice) external whenNotPaused nonReentrant {
         require(_minPrice > 0, "Auction: Price should be greater than zero");
         IERC721(_nftAddress).transferFrom(msg.sender, address(this), _nftId);
@@ -61,12 +61,33 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         emit AuctionCreated(_nftAddress, _nftId, _paymentToken, _minPrice);
     }
 
-    function bid() external {
-
+    // bid item 1 : 10, 11, 20, 30,
+    function bid(address _nftAddress, uint256 _nftId, uint256 _price) external whenNotPaused nonReentrant payable {
+        Item memory _item = items[_nftAddress][_nftId];
+        address _bidder = msg.sender;
+        if (_item.paymentToken != address (0))  { // payment token is ERC20
+            require(_price > _item.lastBidPrice, "Auction: Bid price should be greater than last bid price");
+            IERC20(_item.paymentToken).safeTransferFrom(_bidder, address(this), _price);
+            _updateBidData(_nftAddress, _nftId, _bidder, _price);
+        } else { // payment token is native token (ETH, BNB)
+            uint256 _bidValue = msg.value;
+            require(_bidValue > _item.lastBidPrice, "Auction: Bid price should be greater than last bid price");
+            _updateBidData(_nftAddress, _nftId, _bidder, _bidValue);
+        }
+        emit Bid(_nftAddress, _nftId, _bidder, _price);
     }
 
-    function cancelBid() external {
-
+    function cancelBid(address _nftAddress, uint256 _nftId, uint256 _bidIndex) external whenNotPaused nonReentrant {
+        require(bidStatus[_nftAddress][_nftId][_bidIndex] == BidStatus.Available, "Auction: Bid is not available");
+        Item storage _item = items[_nftAddress][_nftId];
+        address _bidder = bidders[_nftAddress][_nftId][_bidIndex];
+        uint256 _price = _item.lastBidPrice;
+        if (_item.paymentToken != address(0)) {
+            IERC20(_item.paymentToken).safeTransfer(_bidder, _price);
+        } else {
+            payable(_bidder).transfer(_price);
+        }
+        bidStatus[_nftAddress][_nftId][_bidIndex] = BidStatus.Cancelled;
     }
 
     function acceptBid() external {
@@ -83,6 +104,16 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
 
     // View functions
     // Internal functions
+
+    function _updateBidData(address _nftAddress, uint256 _nftId, address _bidder, uint256 _price) internal {
+        Item storage _item = items[_nftAddress][_nftId];
+        _item.lastBidPrice = _price;
+        _item.highestBidder = _bidder;
+        bidders[_nftAddress][_nftId].push(_bidder);
+        uint256 totalBids = bidders[_nftAddress][_nftId].length;
+        bidStatus[_nftAddress][_nftId][totalBids - 1] = BidStatus.Available;
+    }
+
     // Private functions
     // Restricted functions
     function pause() external onlyOwner {
@@ -103,6 +134,7 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
 
     // Events
     event AuctionCreated(address indexed nftAddress, uint256 indexed nftId, address indexed paymentToken, uint256 minPrice);
+    event Bid(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
 
     // Fallback functions
     fallback() external {
