@@ -148,6 +148,4 @@ contract MarketPlace is Ownable, Pausable, ReentrancyGuard, IERC721Receiver {
     event Listed(uint256 indexed tokenId, uint256 price, uint256 createdTime, address owner);
     event Sold(uint256 indexed tokenId, uint256 price, address buyer, address seller);
     event Cancelled(uint256 indexed tokenId, address owner);
-
-
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
@@ -42,9 +43,10 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
 
     // Modifier
     // Constructor
-    constructor(address _feeReceiver, uint256 _fee) Ownable(msg.sender) {
+    constructor(address _feeReceiver, uint256 _fee, uint256 _penaltyFee) Ownable(msg.sender) {
         feeReceiver = _feeReceiver;
         fee = _fee;
+        penaltyFee = _penaltyFee;
     }
     // External functions
 
@@ -93,13 +95,8 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
 
         bidStatus[_nftAddress][_nftId][_bidIndex] = BidStatus.Cancelled;
         uint256 _penalty = _price * penaltyFee / FEE_DENOMINATOR;
-        if (_item.paymentToken != address(0)) {
-            IERC20(_item.paymentToken).safeTransfer(_bidder, _price - _penalty);
-            IERC20(_item.paymentToken).safeTransfer(feeReceiver, _penalty);
-        } else {
-            payable(_bidder).transfer(_price - _penalty);
-            payable(feeReceiver).transfer(_penalty);
-        }
+        _transferToken(_bidder, _item.paymentToken, _price - _penalty);
+        _transferToken(feeReceiver, _item.paymentToken, _penalty);
         emit BidCancelled(_nftAddress, _nftId, _bidder, _price);
     }
 
@@ -107,43 +104,54 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         Item storage _item = items[_nftAddress][_nftId];
         require(_item.status == BidStatus.Available, "Auction: Bid is not available");
         require(_item.owner == msg.sender, "Auction: Only owner can accept the bid");
-        address _bidder = _item.highestBidder;
+        address _highestBidder = _item.highestBidder;
         uint256 _price = _item.lastBidPrice;
         uint256 _feeAmount = _price * fee / FEE_DENOMINATOR;
         uint256 _sellerAmount = _price - _feeAmount;
         _item.status = BidStatus.Accepted;
         bidStatus[_nftAddress][_nftId][bidders[_nftAddress][_nftId].length - 1] = BidStatus.Accepted;
-        if (_item.paymentToken != address(0)) {
-            IERC20(_item.paymentToken).safeTransfer(_item.owner, _sellerAmount);
-            IERC20(_item.paymentToken).safeTransfer(feeReceiver, _feeAmount);
-        } else {
-            payable(feeReceiver).transfer(_feeAmount);
-            payable(_item.owner).transfer(_sellerAmount);
-        }
+        _transferToken(_item.owner, _item.paymentToken, _sellerAmount);
+        _transferToken(feeReceiver, _item.paymentToken, _feeAmount);
 
         // back money to other bidders
         for (uint256 i = 0; i < bidders[_nftAddress][_nftId].length; i++) {
             if (bidStatus[_nftAddress][_nftId][i] == BidStatus.Available) {
                 uint256 _bidPrice = bidPrices[_nftAddress][_nftId][i];
                 address _bidder = bidders[_nftAddress][_nftId][i];
-                if (_item.paymentToken == address(0)) {
-                    payable(_bidder).transfer(_bidPrice);
-                } else {
-                    IERC20(_item.paymentToken).safeTransfer(_bidder, _bidPrice);
-                }
+                _transferToken(_bidder, _item.paymentToken, _bidPrice);
                 bidStatus[_nftAddress][_nftId][i] = BidStatus.Cancelled;
             }
         }
-        IERC721(_nftAddress).transferFrom(address(this), _bidder, _nftId);
-        emit BidAccepted(_nftAddress, _nftId, _bidder, _price);
+        IERC721(_nftAddress).transferFrom(address(this), _highestBidder, _nftId);
+        emit BidAccepted(_nftAddress, _nftId, _highestBidder, _price);
     }
 
     // cancel auction
     // owner can cancel auction
     // back nft to owner
     // back money to bidders
-    function cancelAuction() external {
+    function cancelAuction(address _nftAddress, uint256 _nftId) external nonReentrant whenNotPaused {
+        Item storage _item = items[_nftAddress][_nftId];
+        require(_item.status == BidStatus.Available, "Auction: Auction is not available");
+        require(_item.owner == msg.sender, "Auction: Only owner can cancel the auction");
 
+        // Set auction status to Cancelled
+        _item.status = BidStatus.Cancelled;
+
+        // Transfer NFT back to the owner
+        IERC721(_nftAddress).transferFrom(address(this), _item.owner, _nftId);
+
+        // Refund all bidders
+        for (uint256 i = 0; i < bidders[_nftAddress][_nftId].length; i++) {
+            if (bidStatus[_nftAddress][_nftId][i] == BidStatus.Available) {
+                address _bidder = bidders[_nftAddress][_nftId][i];
+                uint256 _bidAmount = bidPrices[_nftAddress][_nftId][i];
+                _transferToken(_bidder, _item.paymentToken, _bidAmount);
+                bidStatus[_nftAddress][_nftId][i] = BidStatus.Cancelled;
+            }
+        }
+
+        emit AuctionCancelled(_nftAddress, _nftId, _item.owner);
     }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
@@ -159,9 +167,17 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         _item.highestBidder = _bidder;
         bidders[_nftAddress][_nftId].push(_bidder);
         bidPrices[_nftAddress][_nftId].push(_price);
-        uint256 totalBids = bidders[_nftAddress][_nftId].length;
-        bidStatus[_nftAddress][_nftId][totalBids - 1] = BidStatus.Available;
+        uint256 _totalBids = bidders[_nftAddress][_nftId].length;
+        bidStatus[_nftAddress][_nftId][_totalBids - 1] = BidStatus.Available;
         _item.status = BidStatus.Available;
+    }
+
+    function _transferToken(address _receiver, address _token, uint256 _amount) internal {
+        if (_token == address(0)) {
+            payable(_receiver).transfer(_amount);
+        } else {
+            IERC20(_token).safeTransfer(_receiver, _amount);
+        }
     }
 
     // Private functions
@@ -182,11 +198,16 @@ contract Auction is Ownable, Pausable, ReentrancyGuard, IERC721Receiver{
         fee = _fee;
     }
 
+    function changePenaltyFee(uint256 _penaltyFee) external onlyOwner {
+        penaltyFee = _penaltyFee;
+    }
+
     // Events
     event AuctionCreated(address indexed nftAddress, uint256 indexed nftId, address indexed paymentToken, uint256 minPrice);
     event Bid(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
     event BidCancelled(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
     event BidAccepted(address indexed nftAddress, uint256 indexed nftId, address indexed bidder, uint256 price);
+    event AuctionCancelled(address indexed nftAddress, uint256 indexed nftId, address indexed owner);
 
     // Fallback functions
     fallback() external {
