@@ -39,6 +39,7 @@ contract Lottery is Ownable, Pausable, ReentrancyGuard {
 
     uint256 public ticketPrice;
     uint256 public constant ONE_HUNDRED_PERCENT = 10000;
+    uint256 public constant LUCKY_NUMBER_RANGE = 1000000;
 
     // Modifier
     modifier onlyOperator() {
@@ -52,6 +53,7 @@ contract Lottery is Ownable, Pausable, ReentrancyGuard {
         ticketPrice = _ticketPrice;
         megaRewardPercentage = _megaRePer;
         currentRoundIndex = 1;
+        emit NewRound(currentRoundIndex, block.timestamp, 0);
     }
 
     // External functions
@@ -82,44 +84,95 @@ contract Lottery is Ownable, Pausable, ReentrancyGuard {
         if (pendingRewards[msg.sender] > 0) {
             pendingRewards[msg.sender] = 0;
             USDT.safeTransfer(msg.sender, pendingRewards[msg.sender]);
+            emit ClaimReward(msg.sender, pendingRewards[msg.sender]);
         }
     }
 
+    function addMoreReward(uint256 _amount) external {
+        USDT.transferFrom(msg.sender, address(this), _amount);
+        RoundData storage _currentRound = rounds[currentRoundIndex];
+        _currentRound.totalReward += _amount;
+        emit AddMoreReward(msg.sender, _amount);
+    }
+
     // View functions
+    function checkLuckyNumber() external view returns (uint256) {
+        return _calculateLuckyNumber();
+    }
+
     // Internal functions
     function _finishRound(uint256 _luckyNumber) internal {
         RoundData storage _currentRound = rounds[currentRoundIndex];
         _currentRound.luckyNumber = _luckyNumber;
         _currentRound.status = Status.Closed;
         _currentRound.endTime = block.timestamp;
-
+        _currentRound.luckyNumber = _luckyNumber;
+        emit FinishRound(currentRoundIndex, _luckyNumber);
         // check user has bought lucky number | check megaPrize
+        uint256 _totalReward = _currentRound.totalReward;
         if (ticketsPerRound[currentRoundIndex][_luckyNumber] > 0) { // have winner
             address[] memory _winners = ticketHolders[currentRoundIndex][_luckyNumber].values();
-            uint256 _megaReward = _currentRound.totalReward * megaRewardPercentage / ONE_HUNDRED_PERCENT;
+            // calculate mega reward
+            uint256 _megaReward = _totalReward * megaRewardPercentage / ONE_HUNDRED_PERCENT;
+            _totalReward -= _megaReward;
             uint256 _totalTicketWithLuckyNumber = ticketsPerRound[currentRoundIndex][_luckyNumber];
             for (uint256 i = 0; i < _winners.length; i++) {
                 address _winner = _winners[i];
                 uint256 _userTickets = userTickets[_winner][currentRoundIndex][_luckyNumber];
-                pendingRewards[_winner] += _megaReward * _userTickets / _totalTicketWithLuckyNumber;
+                uint256 _reward = _megaReward * _userTickets / _totalTicketWithLuckyNumber;
+                pendingRewards[_winner] += _reward;
+                emit Winner(_winner, currentRoundIndex, _luckyNumber, _reward);
             }
-
-        } else {
-
         }
 
+        // start new round
         currentRoundIndex++;
+        RoundData storage _newRound = rounds[currentRoundIndex];
+        _newRound.startTime = block.timestamp;
+        _newRound.status = Status.Open;
+        _newRound.totalReward = _totalReward;
+        emit NewRound(currentRoundIndex, block.timestamp, _totalReward);
+    }
+
+    function _updateLuckyNumber(uint256 _luckyNumber) internal {
+
+    }
+
+    function _calculateLuckyNumber() internal view returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty, tx.origin, address(this)))) % LUCKY_NUMBER_RANGE;
     }
 
     // Restricted functions
-    function pause() external onlyOwner{}
-    function unpause() external onlyOwner{}
-    function changeTicketPrice(uint256 _ticketPrice) external onlyOwner{}
-    function changeMegaRewardPercentage(uint256 _megaRePer) external onlyOwner{}
+    function pause() external onlyOwner {
+        _pause();
+    }
+    function unpause() external onlyOwner {
+        _unpause();
+    }
 
-    function finishCurrentRound() external onlyOperator{}
+    function changeTicketPrice(uint256 _ticketPrice) external onlyOwner {
+        ticketPrice = _ticketPrice;
+    }
+
+    function changeMegaRewardPercentage(uint256 _megaRePer) external onlyOwner {
+        require(_megaRePer <= ONE_HUNDRED_PERCENT, "Lottery: Invalid input");
+        megaRewardPercentage = _megaRePer;
+    }
+
+    function finishCurrentRound() external onlyOperator {
+        _finishRound();
+    }
+
+    function updateLuckyNumber() external onlyOperator {
+        uint256 _luckyNumber = _calculateLuckyNumber();
+        _updateLuckyNumber(_luckyNumber);
+    }
 
     // Event
     event TicketBought(address indexed user, uint256 roundIndex, uint256[] ticketNumbers, uint256[] amounts);
-
+    event Winner(address indexed user, uint256 roundIndex, uint256 ticketNumber, uint256 reward);
+    event NewRound(uint256 roundIndex, uint256 startTime, uint256 totalReward);
+    event FinishRound(uint256 roundIndex, uint256 luckyNumber);
+    event ClaimReward(address indexed user, uint256 amount);
+    event AddMoreReward(address sender, uint256 amount);
 }
